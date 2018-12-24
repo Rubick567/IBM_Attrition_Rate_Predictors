@@ -18,3 +18,6 @@ The main processes of this part are:
 * Fitting the data set:  Although I was basically using the glmuti and randomforest for variables subsetting, I still trained them to make predictions and recorded the results from model comparisions later on. Once I had got my "Best-Set" predictor set, I plugged them into LDA, QDA and KNN to check how they performed on those models.
 * Comparing the models: For comparision among LDA, QDA and GLM models, graphing ROC curves and computing AUC value respectively would be a good idea. However, since I wanted to compare all of the predicting models so far(RF, GLM, LDA, QDA, KNN), I calculated the Overall Error Rate and Power of these models for comparision
 * Results:  In terms of the Overall Error Rate, the KNN model was doing the best with an error rate of 0.1014 while the QDA model achieved the highest predicting power(0.4545)
+## Conclusions & Recommendations
+### Model Selection
+It depends. We are always facing the trade-off between the Type I and Type II error rates. For example, in this case if we want to achieve a higher precitive power of the model, we have to face more false positives. On the contrary
