@@ -1,0 +1,653 @@
+---
+title: 'Project: IBM Attrition'
+output:
+  html_document:
+    df_print: paged
+---
+# Introduction
+# Conclusions & Recommendations
+```{r setup, include=FALSE}
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN", "leaps", "ISLR", "glmnet", "glmulti","corrplot")   
+installIfAbsentAndLoad(needed)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "Man", "MD", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manufacturing Director, Man = Manager, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# # HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree 
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age"  
+# Get rid of Employee Count, Employee Number, Over18 and StandardHours
+```
+
+## EDA (Exploratory Data Analysis)
+```{r plots, Attrition ~ Income, OverTime, Promotion, echo=FALSE}
+ggplot(ibm, aes(x= MonthlyIncome, y=TotalWorkingYears, col = JobLevel)) + geom_point()
+
+ggplot(ibm, aes(x = MonthlyIncome, fill = Attrition)) + geom_density(alpha = 0.5) + scale_fill_manual(values = c("#339900","#FF0000"))
+
+ggplot(ibm, aes(y = YearsSinceLastPromotion, x = YearsAtCompany)) + geom_jitter(size = 1, alpha = 0.5, color = "#FF3300") + facet_wrap(~ Attrition) + ggtitle("Attrition") + theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(ibm, aes(x = OverTime, group = Attrition)) + geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count", alpha = 0.7) +geom_text(aes(label = scales::percent(..prop..), y = ..prop.. ), stat= "count", vjust = -.5) +labs(y = "Percentage", fill= "OverTime") +facet_grid(~Attrition) +scale_fill_manual(values = c("#339900","#FF0000")) + theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) + ggtitle("Attrition")
+
+```
+
+### Three brief conclusions can be drawn from the analysis so far:
+* A majority of the employees who have attrition issues come from the relatively low-MonthlyIncome groups.
+* There is a high correlation between YearSinceLastPromotion and Attrition, indicating that employees are more likely to be upset if they haven't been promoted for a long time.
+* There is a also high correlation between OverTime and Attrition, indicating that employees are also more likely to be upset if they have to work overtime.
+
+```{r plots, Attrition ~ WorkLifeBalance, BusinessTravel, echo=FALSE}
+ggplot(ibm,aes(x= WorkLifeBalance, y=DistanceFromHome, group = WorkLifeBalance, fill = WorkLifeBalance)) + geom_boxplot(alpha=0.7) + theme(legend.position="none") + facet_wrap(~ Attrition) + ggtitle("Attrition") + theme(plot.title = element_text(hjust = 0.7))
+
+ggplot(ibm, aes(x= BusinessTravel,  group=Attrition)) + geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count", alpha = 0.7) + geom_text(aes(label = scales::percent(..prop..), y = ..prop.. ), stat= "count", vjust = -.5) + labs(y = "Percentage", fill="Business Travel") + facet_grid(~Attrition) + scale_y_continuous(labels=percent) + scale_fill_manual(values = c("#fdb462","#ef3b2c", "#386cb0")) + theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) + 
+ggtitle("Attrition")
+
+ggplot(ibm, aes(x = JobRole, y = JobSatisfaction, fill = Department)) + geom_bar(stat = "summary",fun.y = "mean", alpha = 0.7) + theme_classic()
+
+ggplot(ibm,aes(x= EnvironmentSatisfaction, y=DistanceFromHome, group = EnvironmentSatisfaction, fill = EnvironmentSatisfaction)) + geom_boxplot(alpha=0.7) + theme(legend.position="none") + facet_wrap(~ Attrition) + ggtitle("Attrition") + theme_light()
+
+```
+
+### Two more conclusions have been drawn from the plots:
+* It seems like that those who evaluated their distances from job to home relatively
+worse are more likely to have attrition issues. Therefore, WorkLifeBalance may be an intuitive predictor for the model.
+* In terms of business travel frequencies, there is also a clear indication that comparing with the employees still in the company, the employees who have already left contain a larger proportion of people considering that their travel frequencies are pretty high and their working schedules being intensive.
+
+## R Modelling
+
+```{r fitting randomforest model}
+# Before We've been exposed to the methods of subsetting variables such as "glmnet" and  "glmulti" package, we've already started our project and looked up the functions that could be helpful to choose the best predictors set fot the model. What we are going to cover in the following part of the project is to appply randomforest and some functions in "caret" package to strengthen it. It may take a while to install caret if you don't have it installed in your R...
+
+# install.packages("caret",
+#                  repos = "http://cran.r-project.org", 
+#                  dependencies = c("Depends", "Imports", "Suggests"))
+
+library(caret)
+set.seed(5072)
+
+trainprop <- 0.75
+validateprop <- 0.15
+n <- nrow(ibm)
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm[train,]
+validateset <- ibm[validate,]
+testset <- ibm[test,]
+
+# RandomForest
+
+fit.forest <- randomForest(Attrition ~ ., data = trainset, importance = TRUE)
+rfpreds <- predict(fit.forest, testset, type = "class")
+(ibmtable <- table(testset$Attrition, rfpreds))
+rocrf <- roc(as.numeric(testset$Attrition), as.numeric(rfpreds))
+rocrf$auc
+aucc <- roc.area(as.numeric(testset$Attrition)-1, as.numeric(rfpreds) -1 )
+print(paste("The Auc Value of the model is:",aucc$A))
+
+# Since the performance of randomforest model is not quite satisifying, we should
+# apply a gbm model to modify the trees and also tune the gbm model by CV and resampling
+fitControl <- trainControl(method = "cv",
+                     number = 10,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+gbm.fit <- train(Attrition ~ ., data = trainset, method = "gbm", verbose = FALSE, metric = "ROC", trControl = fitControl)
+gbmpreds <- predict(gbm.fit, testset)
+(ibmtable <- table(testset$Attrition, gbmpreds))
+rocgbm <- roc(as.numeric(testset$Attrition), as.numeric(gbmpreds))
+rocgbm$auc
+aucc <- roc.area(as.numeric(testset$Attrition)-1, as.numeric(gbmpreds) -1 )
+print(paste("The Auc Value of the model is:",aucc$A))
+
+# Since the data also has the problem with Oversampling(Far more "No"s than "Yes"s, we tried to apply SMOTE(Synthetic Minority Over-sampling Technique) function to handle this problem:
+fitControl$sampling <- "smote"
+smotefit <- train(Attrition ~., data = trainset, method = "gbm", verbose = FALSE, metric = "ROC", trControl = fitControl)
+smotepreds <- predict(smotefit, testset)
+(ibmtable <- table(testset$Attrition, smotepreds))
+(mean(smotepreds != testset$Attrition))
+rocsmote <- roc(as.numeric(testset$Attrition), as.numeric(smotepreds))
+rocsmote$auc
+aucc <- roc.area(as.numeric(testset$Attrition)-1, as.numeric(smotepreds) -1 )
+print(paste("The Auc Value of the model is:",aucc$A))
+
+# Pick the boosted RF Model and plot an graphic of the importances among each predictor
+ggplot(varImp(smotefit)) + 
+geom_bar(stat = 'identity', fill = 'orangered1', color = 'black') + 
+scale_y_continuous(limits = c(0, 105), expand = c(0, 0))
+
+```
+### RF:The top three predictors are:
+* Overtime
+* Stock Option Level
+* Job Statisfaction
+### The job role with the highest expected Attrition Rate:
+* Sales Representative
+* Laboratory Technician
+* Research Scienctist
+
+```{r, Subsetting with glm.multi}
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN","leaps", "ISLR", "glmnet", "glmulti","corrplot")   
+installIfAbsentAndLoad(needed)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "Man", "MD", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manufacturing Director, Man = Manager, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# # HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree 
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age"  
+# Get rid of Employee Count, Employee Number, Over18 and StandardHours
+set.seed(5072)
+
+# Subsetting
+num.predictors <- 10
+ibm <- na.omit(ibm)
+x <- ibm[, !names(ibm) %in% "Attrition"]
+yclass <- ibm$Attrition 
+mydf <- data.frame(x[1:num.predictors], "Attrition"=yclass)   
+num.to.keep <- 10
+
+glmulti.glm.out <- glmulti(mydf$Attrition ~ .,
+                           data=mydf,
+                           method="g",
+                           crit = "aic",
+                           confsetsize = num.to.keep,
+                           fitfunction = "glm",
+                           family = binomial,
+                           level = 1,
+                           plotty = FALSE,
+                           )                           
+glmulti.summary <- summary(glmulti.glm.out)
+glmulti.summary$bestmodel
+# mydf$Attrition ~ 1 + BusinessTravel + Department + EducationField +
+# Age + DailyRate + DistanceFromHome + EnvironmentSatisfaction   
+glmulti.glm.out@formulas[1]
+glmulti.glm.out@formulas[2]
+my.best.model <- glm(glmulti.summary$bestmodel, 
+                     data=ibm, 
+                     family='binomial')
+trainprop <- 0.75
+validateprop <- 0.15
+n <- nrow(ibm)
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm[train,]
+validateset <- ibm[validate,]
+testset <- ibm[test,]
+
+glm.probs <- predict(my.best.model, testset, type="response")
+glm.pred <- rep("No",nrow(testset))
+glm.pred[glm.probs > 0.50]="Yes"
+ibmtable <- table(testset$Attrition, glm.pred)
+print(ibmtable)
+
+# Overall error rate
+(ibmtable["Yes","No"]+ibmtable["No","Yes"])/sum(ibmtable)
+# Type I Error Rate
+(ibmtable["No","Yes"]/sum(ibmtable["No",]))
+# Type II Error Rate
+(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+# Power: 
+1-(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+
+
+# Check the correlationships between each two variables
+ibm <- read.csv("C:/Users/kobe9/MachineLearning/FinalProject/ibm-hr-analytics-employee-attrition-performance/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "Man", "MD", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manufacturing Director, Man = Manager, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# # HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree 
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age"  
+# Get rid of Employee Count, Employee Number, Over18 and StandardHours
+ibm <- ibm[ ,c("BusinessTravel","Department", "EducationField", 
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+
+ibm[,1] <- as.numeric(ibm[, 1])
+ibm[,2] <- as.numeric(ibm[, 2])
+ibm[,3] <- as.numeric(ibm[, 3])
+(IBM <- cor(ibm))
+corrplot(IBM, method="circle")
+
+
+```
+
+
+### glmulti: The best model is: Attrition ~ 1 + BusinessTravel + Department + EducationField + Age + DailyRate + DistanceFromHome + EnvironmentSatisfaction 
+
+
+```{r LDA,QDA (Variables Set: Team Theta)}
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN","leaps", "ISLR", "glmnet", "glmulti","corrplot","RColorBrewer")   
+installIfAbsentAndLoad(needed)
+
+set.seed(5072)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "MD", "Man", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manufacturing Director, Man = Manager, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age" 
+xset <- ibm[,c( "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel","JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear","MonthlyIncome", "Age")]
+xset$OverTime <- as.numeric(xset$OverTime) -1
+xset <- scale(xset)
+ibm[,c( "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel",
+"JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear","MonthlyIncome", "Age")] <- xset
+
+n <- nrow(ibm)
+trainprop <- 0.75
+validateprop <- 0.15
+n <- nrow(ibm)
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm[train,]
+validateset <- ibm[validate,]
+testset <- ibm[test,]
+
+# head(trainset, 1)
+# head(validateset, 1)
+# head(testset, 1)
+
+# LDA Model
+
+trainset2 <- rbind(trainset, validateset)
+trainset2 <- trainset2[,c("Attrition", "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel", "JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear","MonthlyIncome", "Age")]
+# trainset2 <- trainset2[,c("Attrition","BusinessTravel","Department", "EducationField", 
+# "Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+lda.fit <- lda(Attrition ~ ., data = trainset2, family = binomial)
+lda.pred <- rep("No", nrow(testset))
+lda.fity <- predict(lda.fit, testset)$posterior
+lda.probs <- predict(lda.fit, testset)$class
+actual <- testset$Attrition
+lda.pred[lda.fity[,2] > 0.50]= "Yes"
+lda.pred <- factor(lda.pred, ordered=T, levels=c('No','Yes'))
+ibmtable <- table(actual, lda.pred)
+print(paste("The confusion matrix with a cutoff of 0.5 is:"))
+print(ibmtable)
+# Overall error rate
+(ibmtable["Yes","No"]+ibmtable["No","Yes"])/sum(ibmtable)
+# Type I Error Rate
+(ibmtable["No","Yes"]/sum(ibmtable["No",]))
+# Type II Error Rate
+(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+# Power: 
+1-(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+
+errorrate <- c()
+for (i in seq(0.2, 0.8, 0.1)){
+  lda.pred1 = lda.pred
+  lda.pred1[lda.fity[,2] > i]= "Yes"
+  ibmtable <- table(actual, lda.pred1)
+  errorrate <- c(errorrate, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+}
+
+print(min(errorrate))
+(cut <- seq(0.2, 0.8, 0.1)[which.min(errorrate)])
+lda.pred[lda.fity[,2] > cut]= "Yes"
+lda.pred <- factor(lda.pred, ordered=T, levels=c('No','Yes'))
+(ibmtable <- table(actual, lda.pred))
+
+
+roc(actual, lda.pred)$auc
+ci.auc(actual, lda.pred)
+
+aucc <- roc.area(as.numeric(actual)-1, lda.fity[,2])
+print(paste("The Auc Value of the model is:",aucc$A))
+
+print(paste("The confusion matrix with a cutoff of 0.4 is:"))
+print(ibmtable)
+# Overall error rate
+(ibmtable["Yes","No"]+ibmtable["No","Yes"])/sum(ibmtable)
+# Type I Error Rate
+(ibmtable["No","Yes"]/sum(ibmtable["No",]))
+# Type II Error Rate
+(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+# Power: 
+1-(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+
+# QDA
+
+qda.fit <- qda(Attrition ~ ., data = trainset2, family = binomial)
+qda.pred <- rep("No", nrow(testset))
+qda.fity <- predict(qda.fit, testset)$posterior
+qda.probs <- predict(qda.fit, testset)$class
+actual <- testset$Attrition
+qda.pred[qda.fity[,2] > 0.50]= "Yes"
+qda.pred <- factor(qda.pred, ordered=T, levels=c('No','Yes'))
+
+errorrate <- c()
+for (i in seq(0.2, 0.8, 0.1)){
+  qda.pred1 = qda.pred
+  qda.pred1[qda.fity[,2] > i]= "Yes"
+  ibmtable <- table(actual, qda.pred1)
+  errorrate <- c(errorrate, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+}
+print(min(errorrate))
+(cut <- seq(0.2, 0.8, 0.1)[which.min(errorrate)])
+print(seq(0.2, 0.8, 0.1)[which.min(errorrate)])
+qda.pred[lda.fity[,2] > cut]= "Yes"
+qda.pred <- factor(qda.pred, ordered=T, levels=c('No','Yes'))
+(ibmtable <- table(actual, qda.pred))
+
+# It seems that adjusting threshold doesn't work fot the QDA model
+
+roc(actual, qda.pred)$auc
+ci.auc(actual, qda.pred)
+
+aucc <- roc.area(as.numeric(actual)-1, qda.fity[,2])
+print(paste("The Auc Value of the model is:",aucc$A))
+print(paste("The confusion matrix with a cutoff of 0.5 is:"))
+print(ibmtable)
+# Overall error rate
+(ibmtable["Yes","No"]+ibmtable["No","Yes"])/sum(ibmtable)
+# Type I Error Rate
+(ibmtable["No","Yes"]/sum(ibmtable["No",]))
+# Type II Error Rate
+(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+# Power: 
+1-(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+```
+
+```{r, KNN(Variables Set: Team Theta)}
+# KNN
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN")   
+installIfAbsentAndLoad(needed)
+
+set.seed(5072)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "MD", "Man", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manager, Man = Manufacturing Director, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree
+
+
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age"
+# ibm1 <- ibm[,c("Attrition", "BusinessTravel","Department", "EducationField",
+# "Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+
+n <- nrow(ibm)
+trainprop <- 0.75
+validateprop <- 0.15
+n <- nrow(ibm)
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm[train,]
+validateset <- ibm[validate,]
+testset <- ibm[test,]
+
+
+trainset <- trainset[,c("Attrition", "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel",
+"JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear","MonthlyIncome", "Age")]
+validateset <- validateset[,c("Attrition", "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel","JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear","MonthlyIncome", "Age")]
+testset<- testset[,c("Attrition", "OverTime","StockOptionLevel","WorkLifeBalance","JobSatisfaction", "JobLevel","JobInvolvement", "EnvironmentSatisfaction", "YearsAtCompany", "TrainingTimesLastYear", "MonthlyIncome", "Age")]
+
+train.xvals <- trainset[,-1]
+validate.xvals <- validateset[, -1]
+test.xvals <- testset[, -1]
+train.xvals$OverTime <- as.numeric(train.xvals$OverTime) - 1
+validate.xvals$OverTime <- as.numeric(validate.xvals$OverTime) - 1
+test.xvals$OverTime <- as.numeric(test.xvals$OverTime) - 1
+train.xvals <- scale(train.xvals)
+validate.xvals <- scale(validate.xvals)
+test.xvals <- scale(test.xvals)
+train.yvals <- trainset[,c("Attrition")]
+validate.yvals <- validateset[,c("Attrition")]
+test.yvals <- testset[,c("Attrition")]
+
+kset <- seq(1, 11, by = 2)
+test.error <- c()
+for(k in kset) {
+   knn.pred <- knn(train.xvals, validate.xvals, train.yvals, k = k)
+   # ibmtable <- table(validate.yvals, knn.pred)
+   test.error <- c(test.error, (mean(knn.pred != validate.yvals)))
+ }
+print(paste("Best test k is", kset[which.min(test.error)], "with a test error of", test.error[which.min(test.error)]))
+k <- kset[which.min(test.error)]
+
+test.error <- c()
+knn.pred <- knn(train.xvals,test.xvals, train.yvals, k = k)
+ibmtable <- table(test.yvals, knn.pred)
+test.error <- c(test.error, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+print(paste("For k =", k, " in the model, we have a test error of", test.error))
+print(ibmtable)
+# Overall error rate
+(ibmtable["Yes","No"]+ibmtable["No","Yes"])/sum(ibmtable)
+# Type I Error Rate
+(ibmtable["No","Yes"]/sum(ibmtable["No",]))
+# Type II Error Rate
+(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+# Power: 
+1-(ibmtable["Yes","No"]/sum(ibmtable["Yes",]))
+
+```
+
+```{r LDA,QDA (Variables Set: Best_Model)}
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN","leaps", "ISLR", "glmnet", "glmulti","corrplot","RColorBrewer")   
+installIfAbsentAndLoad(needed)
+
+set.seed(5072)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "MD", "Man", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manufacturing Director, Man = Manager, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age" 
+ibm1 <- ibm[,c("Attrition", "BusinessTravel","Department", "EducationField",
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+
+
+xset <- ibm[,c("BusinessTravel","Department", "EducationField",
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+# xset <- scale(xset)
+ibm[,c("BusinessTravel","Department", "EducationField",
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")] <- xset
+
+n <- nrow(ibm)
+trainprop <- 0.75
+validateprop <- 0.15
+n <- nrow(ibm)
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm[train,]
+validateset <- ibm[validate,]
+testset <- ibm[test,]
+
+# head(trainset, 1)
+# head(validateset, 1)
+# head(testset, 1)
+
+# LDA Model
+
+trainset2 <- rbind(trainset, validateset)
+trainset2 <- trainset2[,c("Attrition","BusinessTravel","Department", "EducationField",
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+lda.fit <- lda(Attrition ~ ., data = trainset2, family = binomial)
+lda.pred <- rep("No", nrow(testset))
+lda.fity <- predict(lda.fit, testset)$posterior
+lda.probs <- predict(lda.fit, testset)$class
+actual <- testset$Attrition
+lda.pred[lda.fity[,2] > 0.50]= "Yes"
+lda.pred <- factor(lda.pred, ordered=T, levels=c('No','Yes'))
+ibmtable <- table(actual, lda.pred)
+
+errorrate <- c()
+for (i in seq(0.2, 0.7, 0.1)){
+  lda.pred1 = lda.pred
+  lda.pred1[lda.fity[,2] > i]= "Yes"
+  ibmtable <- table(actual, lda.pred1)
+  errorrate <- c(errorrate, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+}
+print(min(errorrate))
+(cut <- seq(0.2, 0.8, 0.1)[which.min(errorrate)])
+lda.pred[lda.fity[,2] > cut]= "Yes"
+lda.pred <- factor(lda.pred, ordered=T, levels=c('No','Yes'))
+(ibmtable <- table(actual, lda.pred))
+
+# It seems like for LDA, using a cut of 0.4 could achieve the lowest error which is
+# 0.1148649
+
+roc(actual, lda.pred)$auc
+ci.auc(actual, lda.pred)
+
+aucc <- roc.area(as.numeric(actual)-1, lda.fity[,2])
+print(paste("The Auc Value of the model is:",aucc$A))
+print(paste("The error rate is:", (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable)))
+print(paste("The confusion matrix with a cut of 0.4 is:"))
+print(ibmtable)
+
+# QDA
+
+qda.fit <- qda(Attrition ~ ., data = trainset2, family = binomial)
+qda.pred <- rep("No", nrow(testset))
+qda.fity <- predict(qda.fit, testset)$posterior
+qda.probs <- predict(qda.fit, testset)$class
+actual <- testset$Attrition
+qda.pred[qda.fity[,2] > 0.50]= "Yes"
+qda.pred <- factor(qda.pred, ordered=T, levels=c('No','Yes'))
+
+errorrate <- c()
+for (i in seq(0.2, 0.8, 0.1)){
+  qda.pred1 = qda.pred
+  qda.pred1[qda.fity[,2] > i]= "Yes"
+  ibmtable <- table(actual, qda.pred1)
+  errorrate <- c(errorrate, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+}
+print(min(errorrate))
+print(seq(0.2, 0.7, 0.1)[which.min(errorrate)])
+qda.pred[lda.fity[,2] > cut]= "Yes"
+qda.pred <- factor(qda.pred, ordered=T, levels=c('No','Yes'))
+(ibmtable <- table(actual, qda.pred))
+
+# It seems like that adjusting threshold doesn't work fot the QDA model
+
+roc(actual, qda.pred)$auc
+ci.auc(actual, qda.pred)
+
+aucc <- roc.area(as.numeric(actual)-1, qda.fity[,2])
+print(paste("The Auc Value of the model is:",aucc$A))
+print(paste("The confusion matrix with a cut of 0.5 is:"))
+print(ibmtable)
+```
+
+```{r, KNN(Variables Set: Team Theta)}
+# KNN
+rm(list = ls())
+ibm <- read.csv("IBM_Employee_Attrition.csv")
+installIfAbsentAndLoad <- function(neededVector) {
+  for(thispackage in neededVector) {
+    if( ! require(thispackage, character.only = T) )
+    { install.packages(thispackage)}
+    library(thispackage, character.only = T)
+  }
+}
+needed  <-  c("ggplot2", "grid", "gridExtra", "dplyr", "rpart", "rpart.plot", "randomForest", "gbm", "survival", "pROC", "verification", "DMwR", "scales", "wesanderson", "FNN")   
+installIfAbsentAndLoad(needed)
+
+set.seed(5072)
+
+levels(ibm$JobRole) <- c("HC", "HR", "LT", "MD", "Man", "RD", "RS", "SlEX", "SlR")
+# HC = Healthcare Representative, HR = Human Resources, LT = Laboratory Technician, MD = Manager, Man = Manufacturing Director, RD = Research Director, RS = Research Scienctist, SLEX = Sales Executive, SlR = Sales Representative
+levels(ibm$EducationField) <- c("HR", "LS", "MRK", "MED", "OT", "TD")
+# HR = Human Resources, LS = Life Sciences, MRK = Marketing, MED = Medical, OT = Other, TD = Technical Degree
+
+
+ibm <- ibm[c(-9,-10,-22,-27)]
+colnames(ibm)[1] <- "Age"
+ibm1 <- ibm[,c("Attrition", "BusinessTravel","Department", "EducationField",
+"Age","DailyRate","DistanceFromHome","EnvironmentSatisfaction")]
+
+ibm1 <- model.matrix(Attrition ~ ., data = ibm1)
+ibm1 <- data.frame(ibm1)
+ibm1 <- ibm1[, -1]
+ibm1 <- scale(ibm1)
+ibm1 <- data.frame(ibm1)
+ibm1 <- cbind(ibm$Attrition, ibm1)
+
+n <- nrow(ibm1)
+trainprop <- 0.75
+validateprop <- 0.15
+train  <-  sample(n, trainprop * n)
+validate  <-  sample(setdiff(1:n, train), validateprop * n) 
+test <- setdiff(setdiff(1:n, train), validate)
+trainset <- ibm1[train,]
+validateset <- ibm1[validate,]
+testset <- ibm1[test,]
+
+train.xvals <- trainset[,-1]
+validate.xvals <- validateset[, -1]
+test.xvals <- testset[, -1]
+
+train.yvals <- trainset[,c("ibm$Attrition")]
+validate.yvals <- validateset[,c("ibm$Attrition")]
+test.yvals <- testset[,c("ibm$Attrition")]
+
+kset <- seq(1, 11, by = 2)
+test.error <- c()
+
+for(k in kset) {
+   knn.pred <- knn(train.xvals, validate.xvals, train.yvals, k = k)
+   # ibmtable <- table(validate.yvals, knn.pred)
+   test.error <- c(test.error, (mean(knn.pred != validate.yvals)))
+ }
+print(paste("Best test k is", kset[which.min(test.error)], "with a test error of", test.error[which.min(test.error)]))
+k <- kset[which.min(test.error)]
+
+
+test.error <- c()
+knn.pred <- knn(train.xvals,test.xvals, train.yvals, k = k)
+ibmtable <- table(test.yvals, knn.pred)
+test.error <- c(test.error, (ibmtable["No", "Yes"] + ibmtable["Yes", "No"]) / sum(ibmtable))
+print(paste("For k =", k, " in the model, we have a test error of", test.error))
+print(ibmtable)
+
+```
